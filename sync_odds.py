@@ -24,9 +24,9 @@ def parse_and_sync():
     sb: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
     print("\n[⚡] Starting live odds ingestion across sources...")
     
-    # Scrapes the first 3 scheduled UFC events, ignoring 'Future Events'
-    bfo_bouts = scraper.scrape_bestfightodds(max_ufc_events=3)
-    print(f"[BFO] Scraped {len(bfo_bouts)} matchups from BestFightOdds.")
+    # Dynamically scrapes the top 3 live UFC events found chronologically on the page
+    bfo_bouts = scraper.scrape_bestfightodds(max_events=3)
+    print(f"[BFO] Scraped {len(bfo_bouts)} matchups across the next 3 UFC events.")
     
     if not bfo_bouts:
         print("[!] Warning: Scraper returned 0 bouts. Preserving existing records.")
@@ -48,7 +48,6 @@ def parse_and_sync():
         if not f1 or not f2 or not odds_dict:
             continue
 
-        # Look for Pinnacle, Circa, BetOnline, or Heritage as sharp benchmark
         sharp_key = next((k for k in odds_dict.keys() if any(bm in k.lower() for bm in ["pin", "circa", "betonline", "heritage"])), None)
         
         sharp_f1 = None
@@ -60,7 +59,6 @@ def parse_and_sync():
             sharp_f1 = odds_dict[sharp_key].get("f1_odds")
             sharp_f2 = odds_dict[sharp_key].get("f2_odds")
 
-        # Fallback to DraftKings or first available 2-way line if no primary sharp book
         if sharp_f1 is None or sharp_f2 is None:
             dk_fallback = next((k for k in odds_dict.keys() if "draft" in k.lower()), None)
             if dk_fallback and odds_dict[dk_fallback].get("f1_odds") and odds_dict[dk_fallback].get("f2_odds"):
@@ -73,14 +71,12 @@ def parse_and_sync():
                         sharp_f2 = v.get("f2_odds")
                         break
 
-        # Calculate no-vig fair probabilities if two-way benchmark odds exist
         if sharp_f1 is not None and sharp_f2 is not None:
             try:
                 prob1, prob2, fair1, fair2 = engine.devig_multiplicative(sharp_f1, sharp_f2)
             except Exception:
                 fair1, fair2 = None, None
 
-        # Build clean sportsbook mapping for JSONB column
         books_payload = {}
         for book_name, prices in odds_dict.items():
             books_payload[book_name] = {
@@ -112,7 +108,7 @@ def parse_and_sync():
             sb.table("market_odds").insert(batch).execute()
             print(f"[Supabase] Uploaded batch {i // batch_size + 1} ({len(batch)} fights)...")
             
-        print(f"[✔] Successfully published {len(rows_to_insert)} bouts to Supabase!")
+        print(f"[✔] Successfully published {len(rows_to_insert)} bouts across live events to Supabase!")
     else:
         print("[!] No bouts could be structured.")
 
