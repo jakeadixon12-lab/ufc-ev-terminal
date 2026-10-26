@@ -8,11 +8,9 @@ import engine
 raw_url = os.environ.get("SUPABASE_URL", "")
 raw_key = os.environ.get("SUPABASE_KEY", "")
 
-# Clean quotes, whitespace, and formatting
 clean_url = raw_url.strip().strip("'").strip('"') if raw_url else ""
 clean_key = raw_key.strip().strip("'").strip('"') if raw_key else ""
 
-# Verify valid https scheme or fallback to known good project URL
 if clean_url.startswith("http://") or clean_url.startswith("https://"):
     SUPABASE_URL = clean_url
 else:
@@ -29,24 +27,59 @@ def parse_and_sync():
     bfo_bouts = scraper.scrape_bestfightodds()
     print(f"[BFO] Scraped {len(bfo_bouts)} matchups from BestFightOdds.")
     
+    if not bfo_bouts:
+        print("[!] Warning: Scraper returned 0 bouts. Preserving existing records.")
+        return
+
+    # Debug: Print available book keys found across bouts
+    sample_keys = set()
+    for b in bfo_bouts[:5]:
+        sample_keys.update(b.get("odds", {}).keys())
+    print(f"[Debug] Sportsbook keys detected on page: {list(sample_keys)}")
+
     rows_to_insert = []
 
     for bout in bfo_bouts:
-        f1 = bout["fighter_1"]
-        f2 = bout["fighter_2"]
-        odds_dict = bout["odds"]
+        f1 = bout.get("fighter_1", "").strip()
+        f2 = bout.get("fighter_2", "").strip()
+        odds_dict = bout.get("odds", {})
 
-        sharp_key = next((k for k in odds_dict.keys() if any(bm in k.lower() for bm in ["pinnacle", "circa"])), None)
-        if not sharp_key:
+        if not f1 or not f2 or not odds_dict:
             continue
 
-        sharp_f1 = odds_dict[sharp_key].get("f1_odds")
-        sharp_f2 = odds_dict[sharp_key].get("f2_odds")
+        # Flexible sharp benchmark check (Pinnacle, Circa, BetOnline, Heritage, or fallback to first available book)
+        sharp_key = next((k for k in odds_dict.keys() if any(bm in k.lower() for bm in ["pin", "circa", "betonline", "heritage"])), None)
+        
+        sharp_f1 = None
+        sharp_f2 = None
+        fair1 = None
+        fair2 = None
+
+        if sharp_key:
+            sharp_f1 = odds_dict[sharp_key].get("f1_odds")
+            sharp_f2 = odds_dict[sharp_key].get("f2_odds")
+
+        # Fallback benchmark if no designated sharp book: use DraftKings or first book with 2-way odds
         if sharp_f1 is None or sharp_f2 is None:
-            continue
+            dk_fallback = next((k for k in odds_dict.keys() if "draft" in k.lower()), None)
+            if dk_fallback and odds_dict[dk_fallback].get("f1_odds") and odds_dict[dk_fallback].get("f2_odds"):
+                sharp_f1 = odds_dict[dk_fallback].get("f1_odds")
+                sharp_f2 = odds_dict[dk_fallback].get("f2_odds")
+            else:
+                for k, v in odds_dict.items():
+                    if v.get("f1_odds") is not None and v.get("f2_odds") is not None:
+                        sharp_f1 = v.get("f1_odds")
+                        sharp_f2 = v.get("f2_odds")
+                        break
 
-        prob1, prob2, fair1, fair2 = engine.devig_multiplicative(sharp_f1, sharp_f2)
+        # If we have benchmark odds, compute no-vig probabilities
+        if sharp_f1 is not None and sharp_f2 is not None:
+            try:
+                prob1, prob2, fair1, fair2 = engine.devig_multiplicative(sharp_f1, sharp_f2)
+            except Exception:
+                fair1, fair2 = None, None
 
+        # Build clean sportsbook mapping for JSONB column
         books_payload = {}
         for book_name, prices in odds_dict.items():
             books_payload[book_name] = {
@@ -56,7 +89,7 @@ def parse_and_sync():
 
         rows_to_insert.append({
             "source": "BestFightOdds",
-            "event_name": "UFC Upcoming",
+            "event_name": "UFC Live Market",
             "fighter_1": f1,
             "fighter_2": f2,
             "pin_f1": sharp_f1,
@@ -66,26 +99,21 @@ def parse_and_sync():
             "all_books": books_payload
         })
 
+    print(f"[Engine] Processed {len(rows_to_insert)} bouts ready for insertion.")
+
     if rows_to_insert:
+        print("[Supabase] Refreshing market_odds table...")
         sb.table("market_odds").delete().gte("id", 0).execute()
         
         batch_size = 25
         for i in range(0, len(rows_to_insert), batch_size):
             batch = rows_to_insert[i:i + batch_size]
             sb.table("market_odds").insert(batch).execute()
+            print(f"[Supabase] Uploaded batch {i // batch_size + 1} ({len(batch)} fights)...")
             
-        print(f"[✔] Successfully published {len(rows_to_insert)} fully-analyzed bouts to Supabase!")
+        print(f"[✔] Successfully published {len(rows_to_insert)} bouts to Supabase!")
     else:
-        print("[!] No active bouts with sharp lines found.")
+        print("[!] No bouts could be structured.")
 
 if __name__ == "__main__":
-    if "--loop" in sys.argv:
-        print("[🔄] Terminal Auto-Pilot running. Syncing every 5 minutes. Press Ctrl+C to stop.")
-        while True:
-            try:
-                parse_and_sync()
-            except Exception as e:
-                print(f"[Error] Sync failed: {e}")
-            time.sleep(300)
-    else:
-        parse_and_sync()
+    parse_and_sync()
