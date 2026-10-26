@@ -5,11 +5,20 @@ from supabase import create_client, Client
 import scraper
 import engine
 
-raw_url = os.environ.get("SUPABASE_URL")
-raw_key = os.environ.get("SUPABASE_KEY")
+raw_url = os.environ.get("SUPABASE_URL", "")
+raw_key = os.environ.get("SUPABASE_KEY", "")
 
-SUPABASE_URL = raw_url.strip() if raw_url and raw_url.strip() else "https://tviydjpxxhplnyqvzosb.supabase.co"
-SUPABASE_KEY = raw_key.strip() if raw_key and raw_key.strip() else "sb_publishable_qGixbj6WiH_lgUrZ4ubirQ_ALu_czCS"
+# Clean quotes, whitespace, and formatting
+clean_url = raw_url.strip().strip("'").strip('"') if raw_url else ""
+clean_key = raw_key.strip().strip("'").strip('"') if raw_key else ""
+
+# Verify valid https scheme or fallback to known good project URL
+if clean_url.startswith("http://") or clean_url.startswith("https://"):
+    SUPABASE_URL = clean_url
+else:
+    SUPABASE_URL = "https://tviydjpxxhplnyqvzosb.supabase.co"
+
+SUPABASE_KEY = clean_key if clean_key else "sb_publishable_qGixbj6WiH_lgUrZ4ubirQ_ALu_czCS"
 
 print(f"[Init] Connecting to Supabase project: {SUPABASE_URL}")
 
