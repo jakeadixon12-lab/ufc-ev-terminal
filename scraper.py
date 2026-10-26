@@ -17,46 +17,65 @@ def clean_odds(val_str):
     except ValueError:
         return None
 
-def is_valid_ufc_event(title):
-    t = title.lower()
-    # Reject speculative future pools, futures, and prop sub-sections
-    if any(blocked in t for blocked in ["future event", "futures", "props", "speculative"]):
-        return False
-    # Only keep UFC events
-    return "ufc" in t or "fight night" in t
-
-def scrape_bestfightodds(max_events=3):
-    url = "https://www.bestfightodds.com"
-    resp = requests.get(url, headers=HEADERS, timeout=15)
-    resp.raise_for_status()
-
-    soup = BeautifulSoup(resp.text, "html.parser")
-    bouts = []
-
-    # BestFightOdds wraps each card in table-header / table-div blocks
+def get_upcoming_ufc_schedule(soup, max_events=3):
+    """
+    STEP 1: Automated Schedule Collector
+    Scans the live markup to extract the chronological UFC schedule,
+    strictly ignoring 'Future Events' or speculative props.
+    """
+    scheduled_events = []
+    
     sections = soup.find_all("div", class_=re.compile(r"table-div|table-header", re.I))
     if not sections:
         sections = [soup]
-
-    discovered_events = []
-
+        
     for sec in sections:
         header_el = sec.find_previous(["h1", "h2", "div"], class_=re.compile(r"table-header|event-header|content-list-title", re.I))
         if not header_el:
             header_el = sec.find(["h1", "h2", "span"], class_=re.compile(r"header|title", re.I))
 
         raw_title = header_el.get_text(strip=True) if header_el else ""
+        lower_title = raw_title.lower()
 
-        if not is_valid_ufc_event(raw_title):
+        # Reject speculative pools, futures, and non-UFC promos
+        if any(b in lower_title for b in ["future", "futures", "props", "speculative"]):
             continue
-
-        if raw_title not in discovered_events:
-            # Stop once we have reached the first 3 chronological UFC events
-            if len(discovered_events) >= max_events:
+            
+        if "ufc" in lower_title or "fight night" in lower_title:
+            if raw_title not in scheduled_events:
+                scheduled_events.append(raw_title)
+            if len(scheduled_events) >= max_events:
                 break
-            discovered_events.append(raw_title)
+                
+    return scheduled_events
 
-        event_name = raw_title
+def scrape_bestfightodds(max_events=3):
+    url = "https://www.bestfightodds.com"
+    resp = requests.get(url, headers=HEADERS, timeout=15)
+    resp.raise_for_status()
+    
+    soup = BeautifulSoup(resp.text, "html.parser")
+    
+    # STEP 1: Build the valid dynamic schedule
+    valid_schedule = get_upcoming_ufc_schedule(soup, max_events)
+    
+    bouts = []
+    
+    # STEP 2: Map fights only to validated schedule events
+    sections = soup.find_all("div", class_=re.compile(r"table-div|table-header", re.I))
+    if not sections:
+        sections = [soup]
+        
+    for sec in sections:
+        header_el = sec.find_previous(["h1", "h2", "div"], class_=re.compile(r"table-header|event-header|content-list-title", re.I))
+        if not header_el:
+            header_el = sec.find(["h1", "h2", "span"], class_=re.compile(r"header|title", re.I))
+
+        event_name = header_el.get_text(strip=True) if header_el else ""
+        
+        # If this event isn't in our active scheduled timeline, ignore its fights
+        if event_name not in valid_schedule:
+            continue
 
         table = sec.find("table") if sec.name != "table" else sec
         if not table:

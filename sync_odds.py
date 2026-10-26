@@ -22,20 +22,15 @@ print(f"[Init] Connecting to Supabase project: {SUPABASE_URL}")
 
 def parse_and_sync():
     sb: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    print("\n[⚡] Starting live odds ingestion across sources...")
+    print("\n[⚡] Starting Hybrid UFC Schedule + Odds Pipeline...")
     
-    # Dynamically scrapes the top 3 live UFC events found chronologically on the page
     bfo_bouts = scraper.scrape_bestfightodds(max_events=3)
-    print(f"[BFO] Scraped {len(bfo_bouts)} matchups across the next 3 UFC events.")
     
     if not bfo_bouts:
         print("[!] Warning: Scraper returned 0 bouts. Preserving existing records.")
         return
-
-    sample_keys = set()
-    for b in bfo_bouts[:5]:
-        sample_keys.update(b.get("odds", {}).keys())
-    print(f"[Debug] Sportsbook keys detected on page: {list(sample_keys)}")
+        
+    print(f"[Map] Successfully mapped {len(bfo_bouts)} matchups to active UFC schedule.")
 
     rows_to_insert = []
 
@@ -96,19 +91,18 @@ def parse_and_sync():
             "all_books": books_payload
         })
 
-    print(f"[Engine] Processed {len(rows_to_insert)} bouts ready for insertion.")
+    print(f"[Engine] Prepared {len(rows_to_insert)} structured bout records.")
 
     if rows_to_insert:
-        print("[Supabase] Refreshing market_odds table...")
+        print("[Supabase] Wiping old market table and syncing fresh hybrid schedule...")
         sb.table("market_odds").delete().gte("id", 0).execute()
         
         batch_size = 25
         for i in range(0, len(rows_to_insert), batch_size):
             batch = rows_to_insert[i:i + batch_size]
             sb.table("market_odds").insert(batch).execute()
-            print(f"[Supabase] Uploaded batch {i // batch_size + 1} ({len(batch)} fights)...")
             
-        print(f"[✔] Successfully published {len(rows_to_insert)} bouts across live events to Supabase!")
+        print(f"[✔] Successfully published scheduled bouts to Supabase!")
     else:
         print("[!] No bouts could be structured.")
 
