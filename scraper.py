@@ -5,7 +5,7 @@ from bs4 import BeautifulSoup
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.8"
 }
 
 def clean_odds(val_str):
@@ -25,39 +25,43 @@ def scrape_bestfightodds(max_events=3):
     soup = BeautifulSoup(resp.text, "html.parser")
     bouts = []
 
-    # BestFightOdds structures cards inside div.table-div or tables within content containers
-    event_divs = soup.find_all("div", class_=re.compile(r"table-div|table-header", re.I))
-    if not event_divs:
-        event_divs = soup.find_all("table")
+    # BestFightOdds pairs each card with a table-header followed by table-div
+    headers = soup.find_all("div", class_="table-header")
+    print(f"[Debug] Total table-header containers found on page: {len(headers)}")
 
-    valid_events_count = 0
-    seen_event_names = []
+    events_parsed = 0
 
-    for item in event_divs:
-        # Find the title of this section
-        title_el = item.find_previous(["h1", "h2", "div", "span"], class_=re.compile(r"table-header|event-header|content-list-title|header", re.I))
-        if not title_el:
-            title_el = item.find(["h1", "h2", "span", "a"])
-
-        raw_title = title_el.get_text(strip=True) if title_el else "Upcoming UFC Card"
+    for header_div in headers:
+        # Extract title text
+        title_el = header_div.find(["a", "h1", "h2", "span"])
+        raw_title = title_el.get_text(strip=True) if title_el else "UFC Event"
         lower_title = raw_title.lower()
 
-        # Stop as soon as we hit the Future Events or generic Props section
-        if any(b in lower_title for b in ["future event", "futures", "props", "speculative"]):
+        # Stop as soon as we reach Future Events or generic props
+        if any(term in lower_title for term in ["future", "futures", "props"]):
+            print(f"[Debug] Reached futures boundary at '{raw_title}'. Stopping.")
             break
 
-        table = item if item.name == "table" else item.find("table")
+        # Locate the adjacent table container
+        table_div = header_div.find_next_sibling("div", class_="table-div")
+        if not table_div:
+            table_div = header_div.find_next("div", class_="table-div")
+
+        if not table_div:
+            continue
+
+        table = table_div.find("table")
         if not table:
             continue
 
-        # Extract sportsbooks from table header
+        # Extract books from table header
         thead = table.find("thead")
-        headers = []
+        book_headers = []
         if thead:
             for th in thead.find_all("th"):
                 img = th.find("img")
                 name = img.get("title", "") if img else th.get_text(strip=True)
-                headers.append(name.lower())
+                book_headers.append(name.lower())
 
         tbody = table.find("tbody")
         if not tbody:
@@ -67,14 +71,7 @@ def scrape_bestfightodds(max_events=3):
         if not rows:
             continue
 
-        if raw_title not in seen_event_names:
-            if valid_events_count >= max_events:
-                break
-            seen_event_names.append(raw_title)
-            valid_events_count += 1
-
-        event_name = raw_title
-
+        event_bouts_count = 0
         i = 0
         while i < len(rows) - 1:
             r1 = rows[i]
@@ -99,7 +96,7 @@ def scrape_bestfightodds(max_events=3):
             cells_2 = r2.find_all("td")
 
             for col_idx, cell1 in enumerate(cells_1):
-                book = headers[col_idx + 1] if col_idx + 1 < len(headers) else f"book_{col_idx}"
+                book = book_headers[col_idx + 1] if col_idx + 1 < len(book_headers) else f"book_{col_idx}"
                 cell2 = cells_2[col_idx] if col_idx < len(cells_2) else None
 
                 o1 = clean_odds(cell1.get_text(strip=True))
@@ -110,12 +107,18 @@ def scrape_bestfightodds(max_events=3):
 
             if odds_dict:
                 bouts.append({
-                    "event_name": event_name,
+                    "event_name": raw_title,
                     "fighter_1": f1_name,
                     "fighter_2": f2_name,
                     "odds": odds_dict
                 })
+                event_bouts_count += 1
 
             i += 2
+
+        print(f"[Debug] Event parsed: '{raw_title}' with {event_bouts_count} bouts.")
+        events_parsed += 1
+        if events_parsed >= max_events:
+            break
 
     return bouts
