@@ -31,126 +31,103 @@ def scrape_bestfightodds(max_events=3):
     soup = BeautifulSoup(resp.text, "html.parser")
     bouts = []
 
-    # BestFightOdds primary board table
-    table = soup.find("table", class_=re.compile(r"team-odds-table|odds-table", re.I))
-    if not table:
-        table = soup.find("table")
+    # Find all table-div elements that contain the real fight tables
+    table_divs = soup.find_all("div", class_="table-div")
+    print(f"[Debug] Found {len(table_divs)} fight table containers.")
 
-    if not table:
-        print("[!] No odds table found on page.")
-        return []
+    events_captured = 0
 
-    # Extract all book header labels across columns
-    book_headers = []
-    thead = table.find("thead")
-    header_tr = thead.find("tr") if thead else table.find("tr")
-    if header_row := header_tr:
-        for th in header_row.find_all("th"):
-            img = th.find("img")
-            name = img.get("title", "") if img else th.get_text(strip=True)
-            book_headers.append(name.lower() if name else "")
-
-    print(f"[Debug] Detected {len(book_headers)} table header columns.")
-
-    current_event = None
-    discovered_ufc_events = []
-    
-    # Process every row sequentially top to bottom
-    all_trs = table.find_all("tr")
-    print(f"[Debug] Scanning {len(all_trs)} total table rows.")
-
-    i = 0
-    while i < len(all_trs):
-        tr = all_trs[i]
-
-        # 1. Check if this row is an Event Header Banner
-        header_el = tr.find(["th", "td", "a", "h2", "span"], class_=re.compile(r"table-header|content-list-title|header", re.I))
-        if not header_el and tr.find("th") and len(tr.find_all("td")) == 0:
-            header_el = tr.find("th")
-
-        row_text = tr.get_text(strip=True) if tr else ""
-        
-        # If the row is a section divider or banner
-        if header_el or "odds" in row_text.lower():
-            candidate_title = clean_event_title(header_el.get_text(strip=True) if header_el else row_text)
-            candidate_lower = candidate_title.lower()
-
-            # Boundary: Stop as soon as we reach Future Events
-            if any(term in candidate_lower for term in ["future event", "futures", "props"]):
-                print(f"[Debug] Reached Futures boundary at '{candidate_title}'. Terminating scan.")
-                break
-
-            # If this is a valid UFC event, switch context
-            if "ufc" in candidate_lower or "fight night" in candidate_lower:
-                if candidate_title != current_event:
-                    if candidate_title not in discovered_ufc_events:
-                        if len(discovered_ufc_events) >= max_events:
-                            print(f"[Debug] Reached max limit of {max_events} UFC events. Stopping.")
-                            break
-                        discovered_ufc_events.append(candidate_title)
-                    current_event = candidate_title
-                    print(f"[Debug] Switched active event to: '{current_event}'")
-            elif any(promo in candidate_lower for promo in ["bellator", "pfl", "ksw", "one championship", "cage warriors"]):
-                # Non-UFC promo header - mute current_event so its fights get skipped
-                current_event = None
-
-            i += 1
+    for t_div in table_divs:
+        # The event header sits directly preceding this table-div
+        prev_header = t_div.find_previous("div", class_="table-header")
+        if not prev_header:
             continue
 
-        # 2. If we are not currently inside an accepted UFC card, skip this row
-        if not current_event:
-            i += 1
-            continue
+        raw_title = prev_header.get_text(strip=True)
+        lower_title = raw_title.lower()
 
-        # 3. Process candidate matchup (pairs of rows with odds cells)
-        cells_1 = tr.find_all("td")
-        if not cells_1 or len(cells_1) < 2:
-            i += 1
-            continue
-
-        # Look for fighter 2 on the next line
-        if i + 1 >= len(all_trs):
+        # Stop scanning as soon as we reach Future Events
+        if any(term in lower_title for term in ["future event", "futures", "props"]):
+            print(f"[Debug] Reached futures boundary at '{raw_title}'. Terminating scan.")
             break
 
-        next_tr = all_trs[i + 1]
-        cells_2 = next_tr.find_all("td")
-        if not cells_2 or len(cells_2) < 2:
-            i += 1
+        # Filter strictly for UFC events
+        if "ufc" not in lower_title and "fight night" not in lower_title:
+            print(f"[Debug] Skipping non-UFC promotion: '{raw_title}'")
             continue
 
-        f1_tag = tr.find("th") or tr.find("td")
-        f2_tag = next_tr.find("th") or next_tr.find("td")
+        event_name = clean_event_title(raw_title)
 
-        f1_name = f1_tag.get_text(strip=True) if f1_tag else ""
-        f2_name = f2_tag.get_text(strip=True) if f2_tag else ""
-
-        # Discard header text or invalid rows
-        if not f1_name or not f2_name or f1_name.lower() in ["fighter", "matchup", "event"]:
-            i += 1
+        table = t_div.find("table")
+        if not table:
             continue
 
-        odds_dict = {}
-        for col_idx, cell1 in enumerate(cells_1):
-            book = book_headers[col_idx + 1] if col_idx + 1 < len(book_headers) else f"book_{col_idx}"
-            cell2 = cells_2[col_idx] if col_idx < len(cells_2) else None
+        # Extract book names from this specific event table
+        thead = table.find("thead")
+        book_headers = []
+        if thead:
+            for th in thead.find_all("th"):
+                img = th.find("img")
+                name = img.get("title", "") if img else th.get_text(strip=True)
+                book_headers.append(name.lower() if name else "")
 
-            o1 = clean_odds(cell1.get_text(strip=True))
-            o2 = clean_odds(cell2.get_text(strip=True)) if cell2 else None
+        tbody = table.find("tbody") or table
+        rows = tbody.find_all("tr")
 
-            if o1 is not None or o2 is not None:
-                odds_dict[book] = {"f1_odds": o1, "f2_odds": o2}
+        event_bout_count = 0
+        i = 0
+        while i < len(rows) - 1:
+            r1 = rows[i]
+            r2 = rows[i + 1]
 
-        if odds_dict:
-            bouts.append({
-                "event_name": current_event,
-                "fighter_1": f1_name,
-                "fighter_2": f2_name,
-                "odds": odds_dict
-            })
-            # Advance past both fighter rows
+            f1_tag = r1.find(["th", "td"])
+            f2_tag = r2.find(["th", "td"])
+
+            if not f1_tag or not f2_tag:
+                i += 1
+                continue
+
+            f1_name = f1_tag.get_text(strip=True)
+            f2_name = f2_tag.get_text(strip=True)
+
+            if not f1_name or not f2_name or f1_name.lower() in ["fighter", "matchup"]:
+                i += 1
+                continue
+
+            cells_1 = r1.find_all("td")
+            cells_2 = r2.find_all("td")
+
+            if not cells_1 or not cells_2:
+                i += 1
+                continue
+
+            odds_dict = {}
+            for col_idx, cell1 in enumerate(cells_1):
+                book = book_headers[col_idx + 1] if col_idx + 1 < len(book_headers) else f"book_{col_idx}"
+                cell2 = cells_2[col_idx] if col_idx < len(cells_2) else None
+
+                o1 = clean_odds(cell1.get_text(strip=True))
+                o2 = clean_odds(cell2.get_text(strip=True)) if cell2 else None
+
+                if o1 is not None or o2 is not None:
+                    odds_dict[book] = {"f1_odds": o1, "f2_odds": o2}
+
+            if odds_dict:
+                bouts.append({
+                    "event_name": event_name,
+                    "fighter_1": f1_name,
+                    "fighter_2": f2_name,
+                    "odds": odds_dict
+                })
+                event_bout_count += 1
+
             i += 2
-        else:
-            i += 1
 
-    print(f"[✔] Successfully scraped {len(bouts)} bouts across {len(discovered_ufc_events)} live events.")
+        print(f"[Debug] Event '{event_name}': successfully parsed {event_bout_count} bouts.")
+        events_captured += 1
+        if events_captured >= max_events:
+            print(f"[Debug] Reached {max_events} UFC events cap. Done.")
+            break
+
+    print(f"[✔] Total bouts extracted: {len(bouts)} across {events_captured} UFC events.")
     return bouts
