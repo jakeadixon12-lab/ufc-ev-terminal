@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>UFC +EV Terminal & Bankroll Manager</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { background-color: #0d1117; color: #c9d1d9; }
+    .card { background-color: #161b22; border: 1px solid #30363d; border-radius: 0.5rem; }
+  </style>
+</head>
+<body class="p-4 md:p-8 font-sans">
+  <div class="max-w-7xl mx-auto space-y-6">
+
+    <!-- Header & Scan Control -->
+    <header class="flex flex-col md:flex-row justify-between items-start md:items-center pb-4 border-b border-gray-800 gap-4">
+      <div>
+        <h1 class="text-2xl md:text-3xl font-extrabold tracking-tight text-white flex items-center gap-2">
+          <span class="text-emerald-500">UFC</span> +EV Terminal
+        </h1>
+        <p class="text-xs text-gray-400 mt-1">Live Quantitative Edge Engine & Ledger</p>
+      </div>
+      <div class="flex items-center gap-3">
+        <button id="btnScan" onclick="triggerScan()" class="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded text-sm font-semibold transition flex items-center gap-2">
+          <span>⚡</span> Scan Live +EV Bouts
+        </button>
+      </div>
+    </header>
+
+    <!-- Metrics Row -->
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
+      <div class="card p-4">
+        <span class="text-xs text-gray-400 uppercase font-medium">Liquid Cash</span>
+        <div id="statCash" class="text-2xl font-bold text-white mt-1">$191.00</div>
+      </div>
+      <div class="card p-4">
+        <span class="text-xs text-gray-400 uppercase font-medium">Committed Stake</span>
+        <div id="statExposure" class="text-2xl font-bold text-amber-400 mt-1">$9.00</div>
+      </div>
+      <div class="card p-4">
+        <span class="text-xs text-gray-400 uppercase font-medium">Portfolio Value</span>
+        <div id="statPortfolio" class="text-2xl font-bold text-emerald-400 mt-1">$200.00</div>
+      </div>
+      <div class="card p-4">
+        <span class="text-xs text-gray-400 uppercase font-medium">Theoretical EV</span>
+        <div id="statTheoretical" class="text-2xl font-bold text-indigo-400 mt-1">+$1.80</div>
+      </div>
+      <div class="card p-4">
+        <span class="text-xs text-gray-400 uppercase font-medium">Realized PnL</span>
+        <div id="statPnL" class="text-2xl font-bold text-gray-300 mt-1">$0.00</div>
+      </div>
+    </div>
+
+    <!-- Center Section: Variance Chart & De-Vig Widget -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <!-- Variance / Luck Chart -->
+      <div class="card p-5 lg:col-span-2">
+        <div class="flex justify-between items-center mb-4">
+          <h2 class="text-base font-semibold text-white">Bankroll Trajectory: Realized vs Theoretical EV</h2>
+          <span class="text-xs text-gray-400">Updates On Bet Settlement</span>
+        </div>
+        <div class="h-64">
+          <canvas id="varianceChart"></canvas>
+        </div>
+      </div>
+
+      <!-- Quick Manual De-Vig Calculator -->
+      <div class="card p-5 flex flex-col justify-between">
+        <div>
+          <h2 class="text-base font-semibold text-white mb-3">Instant De-Vig & Sizer</h2>
+          <div class="space-y-3 text-xs">
+            <div>
+              <label class="text-gray-400">Sharp Line A (Pinnacle/Circa)</label>
+              <input id="sharpA" type="number" placeholder="-242" class="w-full bg-gray-900 border border-gray-700 rounded px-2.5 py-1.5 mt-1 text-white">
+            </div>
+            <div>
+              <label class="text-gray-400">Sharp Line B (Opponent)</label>
+              <input id="sharpB" type="number" placeholder="+202" class="w-full bg-gray-900 border border-gray-700 rounded px-2.5 py-1.5 mt-1 text-white">
+            </div>
+            <div>
+              <label class="text-gray-400">Retail Offered Odds (Target Bet)</label>
+              <input id="retailOdds" type="number" placeholder="+215" class="w-full bg-gray-900 border border-gray-700 rounded px-2.5 py-1.5 mt-1 text-white">
+            </div>
+          </div>
+        </div>
+        <div class="mt-4 pt-3 border-t border-gray-800">
+          <button onclick="calculateManual()" class="w-full bg-gray-800 hover:bg-gray-700 text-white font-medium py-1.5 rounded text-xs transition">
+            Calculate Fair Value & EV
+          </button>
+          <div id="calcResults" class="mt-2 text-xs space-y-1 hidden">
+            <div class="flex justify-between"><span class="text-gray-400">Fair Price:</span><span id="resFair" class="text-white font-mono font-bold"></span></div>
+            <div class="flex justify-between"><span class="text-gray-400">Calculated EV:</span><span id="resEV" class="font-mono font-bold"></span></div>
+            <div class="flex justify-between"><span class="text-gray-400">Quarter-Kelly ($200):</span><span id="resStake" class="text-emerald-400 font-mono font-bold"></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Live Scanner Flagged Opportunities -->
+    <div class="card p-5">
+      <div class="flex justify-between items-center mb-3">
+        <h2 class="text-base font-semibold text-white flex items-center gap-2">
+          <span>🎯</span> Live Flagged +EV Opportunities
+        </h2>
+        <span id="scanStatus" class="text-xs text-gray-400">Awaiting scan...</span>
+      </div>
+      <div id="scannerList" class="space-y-3">
+        <div class="text-xs text-gray-500 italic py-2">Click "Scan Live +EV Bouts" above to run the live scraper and Gemini market evaluation.</div>
+      </div>
+    </div>
+
+    <!-- Active & Settled Wager Ledger -->
+    <div class="card p-5">
+      <h2 class="text-base font-semibold text-white mb-3">Active Tickets & Settlement Ledger</h2>
+      <div class="overflow-x-auto">
+        <table class="w-full text-left text-xs">
+          <thead class="text-gray-400 uppercase border-b border-gray-800 pb-2">
+            <tr>
+              <th class="py-2">Fighter Selected</th>
+              <th>Opponent</th>
+              <th>Book</th>
+              <th>Odds</th>
+              <th>Stake</th>
+              <th>Payout</th>
+              <th>EV Edge</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="wagersTableBody" class="divide-y divide-gray-800">
+            <!-- Loaded dynamically via app.js -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
