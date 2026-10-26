@@ -5,8 +5,13 @@ from supabase import create_client, Client
 import scraper
 import engine
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://tviydjpxxhplnyqvzosb.supabase.co")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "sb_publishable_qGixbj6WiH_lgUrZ4ubirQ_ALu_czCS")
+raw_url = os.environ.get("SUPABASE_URL")
+raw_key = os.environ.get("SUPABASE_KEY")
+
+SUPABASE_URL = raw_url.strip() if raw_url and raw_url.strip() else "https://tviydjpxxhplnyqvzosb.supabase.co"
+SUPABASE_KEY = raw_key.strip() if raw_key and raw_key.strip() else "sb_publishable_qGixbj6WiH_lgUrZ4ubirQ_ALu_czCS"
+
+print(f"[Init] Connecting to Supabase project: {SUPABASE_URL}")
 
 def parse_and_sync():
     sb: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
