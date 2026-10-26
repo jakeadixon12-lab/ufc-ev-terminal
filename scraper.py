@@ -19,7 +19,6 @@ def clean_odds(val_str):
 
 def clean_event_title(title):
     t = title.strip()
-    # Strip off trailing ' Odds' for cleaner terminal tab titles
     if t.lower().endswith(" odds"):
         t = t[:-5].strip()
     return t
@@ -32,7 +31,6 @@ def scrape_bestfightodds(max_events=3):
     soup = BeautifulSoup(resp.text, "html.parser")
     bouts = []
 
-    # Target all event table header divs
     headers = soup.find_all("div", class_="table-header")
     print(f"[Debug] Total table-header containers found on page: {len(headers)}")
 
@@ -55,40 +53,32 @@ def scrape_bestfightodds(max_events=3):
 
         event_name = clean_event_title(raw_title)
 
-        # Locate table container: look at immediate sibling or search forward until next header
-        table_div = header_div.find_next_sibling("div", class_=re.compile(r"table-div|table-wrapper", re.I))
-        if not table_div:
-            table_div = header_div.find_next("div", class_=re.compile(r"table-div|table-wrapper", re.I))
-
-        if not table_div:
-            print(f"[Debug] No table container found for '{event_name}'")
-            continue
-
-        table = table_div.find("table")
+        # Find the table associated with this header
+        table = header_div.find_next("table")
         if not table:
             continue
 
-        # Extract book names from any th tags in the table head or first tr
+        # Extract sportsbook names from header row
         book_headers = []
-        for th in table.find_all("th"):
-            img = th.find("img")
-            name = img.get("title", "") if img else th.get_text(strip=True)
-            if name:
+        thead = table.find("thead")
+        header_row = thead.find("tr") if thead else table.find("tr")
+        if header_row:
+            for th in header_row.find_all("th"):
+                img = th.find("img")
+                name = img.get("title", "") if img else th.get_text(strip=True)
                 book_headers.append(name.lower())
 
-        # Pull all rows directly from table (do not rely on <tbody>)
-        all_trs = table.find_all("tr")
-        # Filter out header tr
-        rows = [tr for tr in all_trs if not tr.find("th", class_=re.compile(r"th-header|header", re.I))]
-
+        # Grab all rows that contain odds (td cells)
+        data_rows = [tr for tr in table.find_all("tr") if tr.find_all("td")]
         event_bouts_count = 0
-        i = 0
-        while i < len(rows) - 1:
-            r1 = rows[i]
-            r2 = rows[i + 1]
 
-            f1_tag = r1.find(["th", "td"], class_=re.compile(r"item-name|fighter|name", re.I)) or r1.find(["th", "td"])
-            f2_tag = r2.find(["th", "td"], class_=re.compile(r"item-name|fighter|name", re.I)) or r2.find(["th", "td"])
+        i = 0
+        while i < len(data_rows) - 1:
+            r1 = data_rows[i]
+            r2 = data_rows[i + 1]
+
+            f1_tag = r1.find("th") or r1.find("td")
+            f2_tag = r2.find("th") or r2.find("td")
 
             if not f1_tag or not f2_tag:
                 i += 1
@@ -97,9 +87,8 @@ def scrape_bestfightodds(max_events=3):
             f1_name = f1_tag.get_text(strip=True)
             f2_name = f2_tag.get_text(strip=True)
 
-            # Skip header or empty rows
-            if not f1_name or not f2_name or f1_name.lower() in ["fighter", "matchup", "event"]:
-                i += 1
+            if not f1_name or not f2_name:
+                i += 2
                 continue
 
             odds_dict = {}
