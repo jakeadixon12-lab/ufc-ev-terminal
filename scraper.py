@@ -17,6 +17,13 @@ def clean_odds(val_str):
     except ValueError:
         return None
 
+def clean_event_title(title):
+    t = title.strip()
+    # Strip off trailing ' Odds' for cleaner terminal tab titles
+    if t.lower().endswith(" odds"):
+        t = t[:-5].strip()
+    return t
+
 def scrape_bestfightodds(max_events=3):
     url = "https://www.bestfightodds.com"
     resp = requests.get(url, headers=HEADERS, timeout=15)
@@ -25,51 +32,54 @@ def scrape_bestfightodds(max_events=3):
     soup = BeautifulSoup(resp.text, "html.parser")
     bouts = []
 
-    # BestFightOdds pairs each card with a table-header followed by table-div
+    # Target all event table header divs
     headers = soup.find_all("div", class_="table-header")
     print(f"[Debug] Total table-header containers found on page: {len(headers)}")
 
     events_parsed = 0
 
     for header_div in headers:
-        # Extract title text
         title_el = header_div.find(["a", "h1", "h2", "span"])
         raw_title = title_el.get_text(strip=True) if title_el else "UFC Event"
         lower_title = raw_title.lower()
 
-        # Stop as soon as we reach Future Events or generic props
+        # Stop at Future Events / Futures boundary
         if any(term in lower_title for term in ["future", "futures", "props"]):
             print(f"[Debug] Reached futures boundary at '{raw_title}'. Stopping.")
             break
 
-        # Locate the adjacent table container
-        table_div = header_div.find_next_sibling("div", class_="table-div")
+        # Filter strictly for UFC events
+        if "ufc" not in lower_title and "fight night" not in lower_title:
+            print(f"[Debug] Skipping non-UFC promotion: '{raw_title}'")
+            continue
+
+        event_name = clean_event_title(raw_title)
+
+        # Locate table container: look at immediate sibling or search forward until next header
+        table_div = header_div.find_next_sibling("div", class_=re.compile(r"table-div|table-wrapper", re.I))
         if not table_div:
-            table_div = header_div.find_next("div", class_="table-div")
+            table_div = header_div.find_next("div", class_=re.compile(r"table-div|table-wrapper", re.I))
 
         if not table_div:
+            print(f"[Debug] No table container found for '{event_name}'")
             continue
 
         table = table_div.find("table")
         if not table:
             continue
 
-        # Extract books from table header
-        thead = table.find("thead")
+        # Extract book names from any th tags in the table head or first tr
         book_headers = []
-        if thead:
-            for th in thead.find_all("th"):
-                img = th.find("img")
-                name = img.get("title", "") if img else th.get_text(strip=True)
+        for th in table.find_all("th"):
+            img = th.find("img")
+            name = img.get("title", "") if img else th.get_text(strip=True)
+            if name:
                 book_headers.append(name.lower())
 
-        tbody = table.find("tbody")
-        if not tbody:
-            continue
-
-        rows = tbody.find_all("tr")
-        if not rows:
-            continue
+        # Pull all rows directly from table (do not rely on <tbody>)
+        all_trs = table.find_all("tr")
+        # Filter out header tr
+        rows = [tr for tr in all_trs if not tr.find("th", class_=re.compile(r"th-header|header", re.I))]
 
         event_bouts_count = 0
         i = 0
@@ -77,8 +87,8 @@ def scrape_bestfightodds(max_events=3):
             r1 = rows[i]
             r2 = rows[i + 1]
 
-            f1_tag = r1.find("th") or r1.find("td")
-            f2_tag = r2.find("th") or r2.find("td")
+            f1_tag = r1.find(["th", "td"], class_=re.compile(r"item-name|fighter|name", re.I)) or r1.find(["th", "td"])
+            f2_tag = r2.find(["th", "td"], class_=re.compile(r"item-name|fighter|name", re.I)) or r2.find(["th", "td"])
 
             if not f1_tag or not f2_tag:
                 i += 1
@@ -87,8 +97,9 @@ def scrape_bestfightodds(max_events=3):
             f1_name = f1_tag.get_text(strip=True)
             f2_name = f2_tag.get_text(strip=True)
 
-            if not f1_name or not f2_name:
-                i += 2
+            # Skip header or empty rows
+            if not f1_name or not f2_name or f1_name.lower() in ["fighter", "matchup", "event"]:
+                i += 1
                 continue
 
             odds_dict = {}
@@ -107,7 +118,7 @@ def scrape_bestfightodds(max_events=3):
 
             if odds_dict:
                 bouts.append({
-                    "event_name": raw_title,
+                    "event_name": event_name,
                     "fighter_1": f1_name,
                     "fighter_2": f2_name,
                     "odds": odds_dict
@@ -116,7 +127,7 @@ def scrape_bestfightodds(max_events=3):
 
             i += 2
 
-        print(f"[Debug] Event parsed: '{raw_title}' with {event_bouts_count} bouts.")
+        print(f"[Debug] Event parsed: '{event_name}' with {event_bouts_count} bouts.")
         events_parsed += 1
         if events_parsed >= max_events:
             break
