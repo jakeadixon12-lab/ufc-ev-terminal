@@ -17,70 +17,40 @@ def clean_odds(val_str):
     except ValueError:
         return None
 
-def get_upcoming_ufc_schedule(soup, max_events=3):
-    """
-    STEP 1: Automated Schedule Collector
-    Scans the live markup to extract the chronological UFC schedule,
-    strictly ignoring 'Future Events' or speculative props.
-    """
-    scheduled_events = []
-    
-    sections = soup.find_all("div", class_=re.compile(r"table-div|table-header", re.I))
-    if not sections:
-        sections = [soup]
-        
-    for sec in sections:
-        header_el = sec.find_previous(["h1", "h2", "div"], class_=re.compile(r"table-header|event-header|content-list-title", re.I))
-        if not header_el:
-            header_el = sec.find(["h1", "h2", "span"], class_=re.compile(r"header|title", re.I))
-
-        raw_title = header_el.get_text(strip=True) if header_el else ""
-        lower_title = raw_title.lower()
-
-        # Reject speculative pools, futures, and non-UFC promos
-        if any(b in lower_title for b in ["future", "futures", "props", "speculative"]):
-            continue
-            
-        if "ufc" in lower_title or "fight night" in lower_title:
-            if raw_title not in scheduled_events:
-                scheduled_events.append(raw_title)
-            if len(scheduled_events) >= max_events:
-                break
-                
-    return scheduled_events
-
 def scrape_bestfightodds(max_events=3):
     url = "https://www.bestfightodds.com"
     resp = requests.get(url, headers=HEADERS, timeout=15)
     resp.raise_for_status()
-    
+
     soup = BeautifulSoup(resp.text, "html.parser")
-    
-    # STEP 1: Build the valid dynamic schedule
-    valid_schedule = get_upcoming_ufc_schedule(soup, max_events)
-    
     bouts = []
-    
-    # STEP 2: Map fights only to validated schedule events
-    sections = soup.find_all("div", class_=re.compile(r"table-div|table-header", re.I))
-    if not sections:
-        sections = [soup]
-        
-    for sec in sections:
-        header_el = sec.find_previous(["h1", "h2", "div"], class_=re.compile(r"table-header|event-header|content-list-title", re.I))
-        if not header_el:
-            header_el = sec.find(["h1", "h2", "span"], class_=re.compile(r"header|title", re.I))
 
-        event_name = header_el.get_text(strip=True) if header_el else ""
-        
-        # If this event isn't in our active scheduled timeline, ignore its fights
-        if event_name not in valid_schedule:
-            continue
+    # BestFightOdds structures cards inside div.table-div or tables within content containers
+    event_divs = soup.find_all("div", class_=re.compile(r"table-div|table-header", re.I))
+    if not event_divs:
+        event_divs = soup.find_all("table")
 
-        table = sec.find("table") if sec.name != "table" else sec
+    valid_events_count = 0
+    seen_event_names = []
+
+    for item in event_divs:
+        # Find the title of this section
+        title_el = item.find_previous(["h1", "h2", "div", "span"], class_=re.compile(r"table-header|event-header|content-list-title|header", re.I))
+        if not title_el:
+            title_el = item.find(["h1", "h2", "span", "a"])
+
+        raw_title = title_el.get_text(strip=True) if title_el else "Upcoming UFC Card"
+        lower_title = raw_title.lower()
+
+        # Stop as soon as we hit the Future Events or generic Props section
+        if any(b in lower_title for b in ["future event", "futures", "props", "speculative"]):
+            break
+
+        table = item if item.name == "table" else item.find("table")
         if not table:
             continue
 
+        # Extract sportsbooks from table header
         thead = table.find("thead")
         headers = []
         if thead:
@@ -94,6 +64,17 @@ def scrape_bestfightodds(max_events=3):
             continue
 
         rows = tbody.find_all("tr")
+        if not rows:
+            continue
+
+        if raw_title not in seen_event_names:
+            if valid_events_count >= max_events:
+                break
+            seen_event_names.append(raw_title)
+            valid_events_count += 1
+
+        event_name = raw_title
+
         i = 0
         while i < len(rows) - 1:
             r1 = rows[i]
