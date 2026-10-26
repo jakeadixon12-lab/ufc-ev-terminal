@@ -23,6 +23,10 @@ def clean_event_title(title):
         t = t[:-5].strip()
     return t
 
+def is_prop_name(name):
+    lower = name.lower()
+    return any(p in lower for p in ["over", "under", "round", "decision", "distance", "draw", "points", "inside"])
+
 def scrape_bestfightodds(max_events=3):
     url = "https://www.bestfightodds.com"
     resp = requests.get(url, headers=HEADERS, timeout=15)
@@ -53,7 +57,7 @@ def scrape_bestfightodds(max_events=3):
 
         event_name = clean_event_title(raw_title)
 
-        # Find the table associated with this header
+        # Locate table container
         table = header_div.find_next("table")
         if not table:
             continue
@@ -66,44 +70,74 @@ def scrape_bestfightodds(max_events=3):
             for th in header_row.find_all("th"):
                 img = th.find("img")
                 name = img.get("title", "") if img else th.get_text(strip=True)
-                book_headers.append(name.lower())
+                book_headers.append(name.lower() if name else "")
 
-        # Grab all rows that contain odds (td cells)
-        data_rows = [tr for tr in table.find_all("tr") if tr.find_all("td")]
+        # Parse ALL rows that contain cells
+        all_trs = table.find_all("tr")
+        parsed_rows = []
+
+        for tr in all_trs:
+            name_cell = tr.find(["th", "td"])
+            if not name_cell:
+                continue
+
+            name = name_cell.get_text(strip=True)
+            if not name or name.lower() in ["fighter", "matchup", "event"]:
+                continue
+
+            # Extract odds from each td in this row
+            cells = tr.find_all("td")
+            if not cells:
+                continue
+
+            row_odds = {}
+            for col_idx, cell in enumerate(cells):
+                # Book index offset: first column in thead corresponds to fighter name
+                book_name = book_headers[col_idx + 1] if col_idx + 1 < len(book_headers) else f"book_{col_idx}"
+                val = clean_odds(cell.get_text(strip=True))
+                if val is not None:
+                    row_odds[book_name] = val
+
+            parsed_rows.append({
+                "name": name,
+                "is_prop": is_prop_name(name),
+                "odds": row_odds
+            })
+
+        # Pair fighters sequentially (skipping intermediate props)
         event_bouts_count = 0
+        idx = 0
+        while idx < len(parsed_rows) - 1:
+            row_a = parsed_rows[idx]
 
-        i = 0
-        while i < len(data_rows) - 1:
-            r1 = data_rows[i]
-            r2 = data_rows[i + 1]
-
-            f1_tag = r1.find("th") or r1.find("td")
-            f2_tag = r2.find("th") or r2.find("td")
-
-            if not f1_tag or not f2_tag:
-                i += 1
+            # If row_a is a standalone prop, increment and continue
+            if row_a["is_prop"]:
+                idx += 1
                 continue
 
-            f1_name = f1_tag.get_text(strip=True)
-            f2_name = f2_tag.get_text(strip=True)
+            # Find the very next fighter row (row_b)
+            row_b = None
+            next_fighter_idx = idx + 1
+            while next_fighter_idx < len(parsed_rows):
+                if not parsed_rows[next_fighter_idx]["is_prop"]:
+                    row_b = parsed_rows[next_fighter_idx]
+                    break
+                next_fighter_idx += 1
 
-            if not f1_name or not f2_name:
-                i += 2
-                continue
+            if not row_b:
+                break
 
+            f1_name = row_a["name"]
+            f2_name = row_b["name"]
+
+            # Merge odds for both fighters across books
+            all_books = set(row_a["odds"].keys()).union(set(row_b["odds"].keys()))
             odds_dict = {}
-            cells_1 = r1.find_all("td")
-            cells_2 = r2.find_all("td")
-
-            for col_idx, cell1 in enumerate(cells_1):
-                book = book_headers[col_idx + 1] if col_idx + 1 < len(book_headers) else f"book_{col_idx}"
-                cell2 = cells_2[col_idx] if col_idx < len(cells_2) else None
-
-                o1 = clean_odds(cell1.get_text(strip=True))
-                o2 = clean_odds(cell2.get_text(strip=True)) if cell2 else None
-
-                if o1 is not None or o2 is not None:
-                    odds_dict[book] = {"f1_odds": o1, "f2_odds": o2}
+            for b in all_books:
+                odds_dict[b] = {
+                    "f1_odds": row_a["odds"].get(b),
+                    "f2_odds": row_b["odds"].get(b)
+                }
 
             if odds_dict:
                 bouts.append({
@@ -114,7 +148,8 @@ def scrape_bestfightodds(max_events=3):
                 })
                 event_bouts_count += 1
 
-            i += 2
+            # Advance past row_b
+            idx = next_fighter_idx + 1
 
         print(f"[Debug] Event parsed: '{event_name}' with {event_bouts_count} bouts.")
         events_parsed += 1
