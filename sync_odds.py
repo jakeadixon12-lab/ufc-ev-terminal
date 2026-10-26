@@ -24,14 +24,14 @@ def parse_and_sync():
     sb: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
     print("\n[⚡] Starting live odds ingestion across sources...")
     
-    bfo_bouts = scraper.scrape_bestfightodds()
+    # Scrapes the first 3 scheduled UFC events, ignoring 'Future Events'
+    bfo_bouts = scraper.scrape_bestfightodds(max_ufc_events=3)
     print(f"[BFO] Scraped {len(bfo_bouts)} matchups from BestFightOdds.")
     
     if not bfo_bouts:
         print("[!] Warning: Scraper returned 0 bouts. Preserving existing records.")
         return
 
-    # Debug: Print available book keys found across bouts
     sample_keys = set()
     for b in bfo_bouts[:5]:
         sample_keys.update(b.get("odds", {}).keys())
@@ -42,12 +42,13 @@ def parse_and_sync():
     for bout in bfo_bouts:
         f1 = bout.get("fighter_1", "").strip()
         f2 = bout.get("fighter_2", "").strip()
+        event_name = bout.get("event_name", "UFC Upcoming Event").strip()
         odds_dict = bout.get("odds", {})
 
         if not f1 or not f2 or not odds_dict:
             continue
 
-        # Flexible sharp benchmark check (Pinnacle, Circa, BetOnline, Heritage, or fallback to first available book)
+        # Look for Pinnacle, Circa, BetOnline, or Heritage as sharp benchmark
         sharp_key = next((k for k in odds_dict.keys() if any(bm in k.lower() for bm in ["pin", "circa", "betonline", "heritage"])), None)
         
         sharp_f1 = None
@@ -59,7 +60,7 @@ def parse_and_sync():
             sharp_f1 = odds_dict[sharp_key].get("f1_odds")
             sharp_f2 = odds_dict[sharp_key].get("f2_odds")
 
-        # Fallback benchmark if no designated sharp book: use DraftKings or first book with 2-way odds
+        # Fallback to DraftKings or first available 2-way line if no primary sharp book
         if sharp_f1 is None or sharp_f2 is None:
             dk_fallback = next((k for k in odds_dict.keys() if "draft" in k.lower()), None)
             if dk_fallback and odds_dict[dk_fallback].get("f1_odds") and odds_dict[dk_fallback].get("f2_odds"):
@@ -72,7 +73,7 @@ def parse_and_sync():
                         sharp_f2 = v.get("f2_odds")
                         break
 
-        # If we have benchmark odds, compute no-vig probabilities
+        # Calculate no-vig fair probabilities if two-way benchmark odds exist
         if sharp_f1 is not None and sharp_f2 is not None:
             try:
                 prob1, prob2, fair1, fair2 = engine.devig_multiplicative(sharp_f1, sharp_f2)
@@ -89,7 +90,7 @@ def parse_and_sync():
 
         rows_to_insert.append({
             "source": "BestFightOdds",
-            "event_name": "UFC Live Market",
+            "event_name": event_name,
             "fighter_1": f1,
             "fighter_2": f2,
             "pin_f1": sharp_f1,
